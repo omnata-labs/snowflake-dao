@@ -1,0 +1,206 @@
+"""
+Generates the Data Access Objects
+"""
+import json
+import os
+from snowflake.snowpark import Session
+from snowflake.snowpark.functions import col, lit
+from . import file_template
+
+class ObjectsGenerator:
+    """
+    Uploads plugins to a Snowflake account and registers them with the Omnata app
+    """
+    def __init__(self,snowflake_connection_parameters,database:str, schema:str):
+        if snowflake_connection_parameters.__class__.__name__ == 'SnowflakeConnection':
+            builder = Session.builder
+            builder._options['connection']=snowflake_connection_parameters
+            self.session = builder.create()
+        else:
+            self.session = Session.builder.configs(snowflake_connection_parameters).create()
+        self.database = database
+        self.schema = schema
+        self.tables={}
+    
+    def snowflake_data_type_to_python(self,snowflake_type:str):
+        if snowflake_type=='NUMBER':
+            return 'int'
+        if snowflake_type=='VARCHAR':
+            return 'str'
+        if snowflake_type=='VARIANT':
+            return 'Dict'
+        if snowflake_type=='ARRAY':
+            return 'List'
+        return 'str'
+    
+    def default_declaration(self,column):
+        # If it's a sequence, we need to handle it differently.
+        # The value will be generated first and stored, so that we know what it is before inserting
+        # (Snowflake doesn't provide a way to determine the sequence value from last insert)
+        if '.NEXTVAL' in column['COLUMN_DEFAULT']:
+            sequence_name = column['COLUMN_DEFAULT'].split('.')[-2]
+            return f"Sequence('{sequence_name}')"
+        # for other defaults, we wrap it in a snowpark sql_expr so it gets evaluated
+        return f"sql_expr(\"\"\"{column['COLUMN_DEFAULT']}\"\"\")"
+    
+    def get_unique_keys(self):
+        self.session.sql(f"""SHOW UNIQUE KEYS in SCHEMA {self.database}.{self.schema};""").collect()
+        return self.session.sql("""select * from table(result_scan(LAST_QUERY_ID()));""").collect()
+    
+    def get_primary_keys(self):
+        self.session.sql(f"""SHOW PRIMARY KEYS in SCHEMA {self.database}.{self.schema};""").collect()
+        return self.session.sql("""select * from table(result_scan(LAST_QUERY_ID()));""").collect()
+
+    def get_foreign_keys(self):
+        self.session.sql(f"""SHOW IMPORTED KEYS in SCHEMA {self.database}.{self.schema};""").collect()
+        # creates a "single foreign key relationship" record by aggregating all the columns into an array
+        foreign_keys = []
+        rows = self.session.sql("""select "pk_database_name",
+            "pk_schema_name",
+            "pk_table_name", 
+            "fk_database_name",
+            "fk_schema_name",
+            "fk_table_name",
+            "fk_name",
+            array_agg("pk_column_name") within group (order by "key_sequence") as "pk_column_names",
+            array_agg("fk_column_name") within group (order by "key_sequence") as "fk_column_names"
+    from table(result_scan(LAST_QUERY_ID()))
+    group by "pk_database_name",
+            "pk_schema_name",
+            "pk_table_name", 
+            "fk_database_name",
+            "fk_schema_name",
+            "fk_table_name",
+            "fk_name"
+    order by "pk_database_name",
+            "pk_schema_name",
+            "pk_table_name";""").collect()
+        for row in rows:
+            row_dict = row.as_dict()
+            row_dict['pk_column_names'] = json.loads(row_dict['pk_column_names'])
+            row_dict['fk_column_names'] = json.loads(row_dict['fk_column_names'])
+            foreign_keys.append(row_dict)
+        return foreign_keys
+
+    def get_tables(self):
+        return self.session.table(f'{self.database}.INFORMATION_SCHEMA.TABLES') \
+            .filter((col('TABLE_CATALOG')==lit(self.database)) & (col('TABLE_SCHEMA')==lit(self.schema))).collect()
+
+    def get_columns(self):
+        return self.session.table(f'{self.database}.INFORMATION_SCHEMA.COLUMNS') \
+            .filter((col('TABLE_CATALOG')==lit(self.database)) & (col('TABLE_SCHEMA')==lit(self.schema))).collect()
+
+    def analyse(self):
+        unique_keys = self.get_unique_keys()
+        print(f"Found {len(unique_keys)} unique keys")
+        primary_keys = self.get_primary_keys()
+        print(f"Found {len(primary_keys)} primary keys")
+        foreign_keys = self.get_foreign_keys()
+        print(f"Found {len(foreign_keys)} foreign keys")
+
+        tables = self.get_tables()
+        table_names = [table['TABLE_NAME'] for table in tables]
+        print(f"Found {len(tables)} tables")
+
+        columns = self.get_columns()
+        print(f"Found {len(columns)} columns")
+        
+        for table_name in table_names:
+            pks = [key_column['column_name'] for key_column in primary_keys if key_column['table_name']==table_name]
+            uniq = [key_column['column_name'] for key_column in unique_keys if key_column['table_name']==table_name]
+            
+            self.tables[table_name]={
+                "unique_columns": pks+uniq,
+                "multi_lookups": {
+                    table['fk_name']:{
+                        "other_table":table['fk_table_name'],
+                        "local_cols":table['pk_column_names'],
+                        "remote_cols":table['fk_column_names']
+                    }
+                    for table in foreign_keys if table['pk_table_name']==table_name
+                },
+                "single_lookups": {
+                    table['fk_name']:{
+                        "other_table":table['pk_table_name'],
+                        "local_cols":table['fk_column_names'],
+                        "remote_cols":table['pk_column_names']
+                    }
+                    for table in foreign_keys if table['fk_table_name']==table_name
+                },
+                "columns":{col['COLUMN_NAME']:col for col in columns if col['TABLE_NAME']==table_name}
+            }
+
+    def generate(self,file_name:str):
+        if len(self.tables)==0:
+            print("No tables to output. Did you analyse the schema first?")
+            return
+        print(f"Generating {file_name}")
+        with open(file_name, 'w',encoding='utf-8') as output_file:
+            template_file = open(os.path.abspath(file_template.__file__), "r",encoding='utf-8')
+            output_file.write(template_file.read())
+            template_file.close()
+            for table_name,table_data in self.tables.items():
+                column_parameters = [f"{' '*16}{column['COLUMN_NAME']}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])}" for column in table_data['columns'].values()]
+                column_parameters_joined = ',\n'.join(column_parameters)
+                # these will appear first in the create method, since no default value can be provided
+                column_parameters_not_nullable_no_default = [f"{' '*12}{column['COLUMN_NAME']}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])}" for column in table_data['columns'].values() if column['IS_NULLABLE']=='NO' and (column['COLUMN_DEFAULT'] is None)]
+                # these will appear next in the create method, since a default value can be set
+                column_parameters_not_nullable_default = [f"{' '*12}{column['COLUMN_NAME']}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])} = {self.default_declaration(column)}" for column in table_data['columns'].values() if column['IS_NULLABLE']=='NO' and (column['COLUMN_DEFAULT'] is not None)]
+                # these will appear next in the create method, since a default value of null can be set
+                column_parameters_nullable = [f"{' '*12}{column['COLUMN_NAME']}:Optional[{self.snowflake_data_type_to_python(column['DATA_TYPE'])}] = None" for column in table_data['columns'].values() if column['IS_NULLABLE']=='YES']
+
+                all_column_parameters_joined = ',\n'.join(column_parameters_not_nullable_no_default+column_parameters_not_nullable_default+column_parameters_nullable)
+                column_assignments = [f"{' '*8}self.{column['COLUMN_NAME']} = {column['COLUMN_NAME']}" for column in table_data['columns'].values()]
+                column_assignments_joined = '\n'.join(column_assignments)
+
+                output_file.write(f"""
+class {table_name}(SnowflakeTable):
+    def __init__(self,
+                session,
+{all_column_parameters_joined}):
+        self._session = session
+{column_assignments_joined}
+
+    @classmethod
+    def create(table_class,
+            session,
+{all_column_parameters_joined}):
+        return SnowflakeTable._create_object(**locals())
+""")
+                # That's the constructor and the standard create method taken care of
+                # now we'll generate methods for doing lookups.
+                # Any column which is marked as UNIQUE, we can do a point lookup on
+                for unique_column_name in table_data['unique_columns']:
+                    column = table_data['columns'][unique_column_name]
+                    column_name_lower = unique_column_name.lower()
+                    output_file.write(f"""
+    @classmethod
+    def lookup_by_{column_name_lower}(cls,session,{column_name_lower}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])}) -> {table_name}:
+        return SnowflakeTable._lookup_by_id(cls,session,'{unique_column_name}',{column_name_lower})
+                    """)
+                # now handle foreign key lookups, these are instance methods
+                # if the foreign key is in the inbound, the other table will only have a single record
+                for fk_name,relationship in table_data['single_lookups'].items():
+                    other_table_name = relationship['other_table']
+                    other_table_name_lower = other_table_name.lower()
+                    local_cols = relationship['local_cols']
+                    remote_cols = relationship['remote_cols']
+                    
+                    output_file.write(f"""
+    def get_related_{other_table_name_lower}_for_{('_and_'.join(local_cols)).lower()}(self) -> {other_table_name}:
+        column_values = [getattr(self,local_col) for local_col in {local_cols}]
+        return SnowflakeTable._lookup_by_column_values({other_table_name},self._session,{remote_cols},column_values,True)
+                        """)
+                # if the foreign key is in the outbound, the other table will have many records
+                for fk_name,relationship in table_data['multi_lookups'].items():
+                    other_table_name = relationship['other_table']
+                    other_table_name_lower = other_table_name.lower()
+                    other_table_name_plural = f"{other_table_name_lower}s" if not other_table_name_lower.endswith('s') else other_table_name_lower
+                    local_cols = relationship['local_cols']
+                    remote_cols = relationship['remote_cols']
+                    
+                    output_file.write(f"""
+    def get_related_{other_table_name_plural}_for_{'_and_'.join(local_cols).lower()}_to_{'_and_'.join(remote_cols).lower()}(self) -> List[{other_table_name}]:
+        column_values = [getattr(self,local_col) for local_col in {local_cols}]
+        return SnowflakeTable._lookup_by_column_values({other_table_name},self._session,{remote_cols},column_values,False)
+                    """)

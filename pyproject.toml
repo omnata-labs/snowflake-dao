@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "snowflake_dao"
+dynamic = ["version"]
+authors = [
+  { name="James Weakley", email="james.weakley@omnata.com" },
+]
+description = "A Data Access Objects generator for Snowflake"
+dependencies = [
+  "snowflake-connector-python",
+  "snowflake-snowpark-python",
+  "snowflake-cli-labs",
+  "typer"
+]
+readme = "README.md"
+license = { file="LICENSE" }
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[tool.hatch.version]
+path = "src/snowflake_dao/__about__.py"
+
+[project.urls]
+"Homepage" = "https://github.com/omnata-labs/snowflake_dao"
+"Bug Tracker" = "https://github.com/omnata-labs/snowflake_dao/issues"
+
+[project.scripts]
+snowflake_dao = "snowflake_dao.cli:app"
