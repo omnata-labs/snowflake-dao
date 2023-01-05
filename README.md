@@ -29,3 +29,29 @@ pip install dist/snowflake_dao-0.0.1-py3-none-any.whl --force-reinstall
 ```
 snowflake_dao SFC_SAMPLES_SAMPLE_DATA TPCDS_SF100TCL
 ```
+
+# To use
+After running the above command, you can do stuff like this:
+```
+import getpass
+import snowflake_tables
+
+snowflake_connection_parameters = {
+    'user':'me',
+    'account':'aa123456.ap-southeast-2',
+    'warehouse':'COMPUTE_WH',
+    'schema':'TPCDS_SF100TCL',
+    'database':'SFC_SAMPLES_SAMPLE_DATA',
+    'role':'SYSADMIN',
+    'password':getpass.getpass() # This should prompt for a password
+}
+from snowflake.snowpark import Session
+session = Session.builder.configs(snowflake_connection_parameters).create()
+
+cc_record = snowflake_tables.CALL_CENTER.lookup_by_cc_call_center_sk(session,2)
+print(cc_record)
+date_dim = cc_record.get_related_date_dim_for_cc_open_date_sk()
+print(date_dim)
+date_dim.get_related_call_centers_for_d_date_sk_to_cc_open_date_sk()
+
+```
