@@ -18,9 +18,13 @@ def generate(
                 'dev', '-e', '--environment',
                 help='Name of environment (e.g. dev, prod, staging)'
             ),
-            snowflake_tables: str = typer.Option(
+            output_file: str = typer.Option(
                 'snowflake_tables.py', '-o', '--output-file',
                 help='Name of file to output'
+            ),
+            include_schema: bool = typer.Option(
+                True, '-s', '--include-schema',
+                help='Include the schema name in the Data Access Objects'
             )):
     """
     Generates Data Access Objects for a Snowflake schema
@@ -35,6 +39,6 @@ def generate(
     if config.isAuth():
         config.connectToSnowflake()
         generator = ObjectsGenerator(snowflake_connection_parameters=config.snowflake_connection.ctx,
-                                database=database,schema=schema)
+                                database=database,schema=schema, include_schema=include_schema)
         generator.analyse()
-        generator.generate(snowflake_tables)
+        generator.generate(output_file)

@@ -11,7 +11,7 @@ class ObjectsGenerator:
     """
     Uploads plugins to a Snowflake account and registers them with the Omnata app
     """
-    def __init__(self,snowflake_connection_parameters,database:str, schema:str):
+    def __init__(self,snowflake_connection_parameters,database:str, schema:str, include_schema:bool = True):
         if snowflake_connection_parameters.__class__.__name__ == 'SnowflakeConnection':
             builder = Session.builder
             builder._options['connection']=snowflake_connection_parameters
@@ -21,6 +21,8 @@ class ObjectsGenerator:
         self.database = database
         self.schema = schema
         self.tables={}
+        self.include_schema = include_schema
+
     
     def snowflake_data_type_to_python(self,snowflake_type:str):
         if snowflake_type=='NUMBER':
@@ -39,7 +41,8 @@ class ObjectsGenerator:
         # (Snowflake doesn't provide a way to determine the sequence value from last insert)
         if '.NEXTVAL' in column['COLUMN_DEFAULT']:
             sequence_name = column['COLUMN_DEFAULT'].split('.')[-2]
-            return f"Sequence('{sequence_name}')"
+            full_sequence_name = f"{column['TABLE_SCHEMA']}.{sequence_name}" if self.include_schema else sequence_name
+            return f"Sequence('{full_sequence_name}')"
         # for other defaults, we wrap it in a snowpark sql_expr so it gets evaluated
         return f"sql_expr(\"\"\"{column['COLUMN_DEFAULT']}\"\"\")"
     
@@ -99,34 +102,36 @@ class ObjectsGenerator:
         print(f"Found {len(foreign_keys)} foreign keys")
 
         tables = self.get_tables()
-        table_names = [table['TABLE_NAME'] for table in tables]
         print(f"Found {len(tables)} tables")
 
         columns = self.get_columns()
         print(f"Found {len(columns)} columns")
         
-        for table_name in table_names:
+        for table in tables:
+            table_name = table['TABLE_NAME']
             pks = [key_column['column_name'] for key_column in primary_keys if key_column['table_name']==table_name]
             uniq = [key_column['column_name'] for key_column in unique_keys if key_column['table_name']==table_name]
             
             self.tables[table_name]={
+                "primary_key_columns": pks,
                 "unique_columns": pks+uniq,
                 "multi_lookups": {
-                    table['fk_name']:{
-                        "other_table":table['fk_table_name'],
-                        "local_cols":table['pk_column_names'],
-                        "remote_cols":table['fk_column_names']
+                    fk['fk_name']:{
+                        "other_table":fk['fk_table_name'],
+                        "local_cols":fk['pk_column_names'],
+                        "remote_cols":fk['fk_column_names']
                     }
-                    for table in foreign_keys if table['pk_table_name']==table_name
+                    for fk in foreign_keys if fk['pk_table_name']==table_name
                 },
                 "single_lookups": {
-                    table['fk_name']:{
-                        "other_table":table['pk_table_name'],
-                        "local_cols":table['fk_column_names'],
-                        "remote_cols":table['pk_column_names']
+                    fk['fk_name']:{
+                        "other_table":fk['pk_table_name'],
+                        "local_cols":fk['fk_column_names'],
+                        "remote_cols":fk['pk_column_names']
                     }
-                    for table in foreign_keys if table['fk_table_name']==table_name
+                    for fk in foreign_keys if fk['fk_table_name']==table_name
                 },
+                "schema":table['TABLE_SCHEMA'],
                 "columns":{col['COLUMN_NAME']:col for col in columns if col['TABLE_NAME']==table_name}
             }
 
@@ -148,24 +153,30 @@ class ObjectsGenerator:
                 column_parameters_not_nullable_default = [f"{' '*12}{column['COLUMN_NAME']}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])} = {self.default_declaration(column)}" for column in table_data['columns'].values() if column['IS_NULLABLE']=='NO' and (column['COLUMN_DEFAULT'] is not None)]
                 # these will appear next in the create method, since a default value of null can be set
                 column_parameters_nullable = [f"{' '*12}{column['COLUMN_NAME']}:Optional[{self.snowflake_data_type_to_python(column['DATA_TYPE'])}] = None" for column in table_data['columns'].values() if column['IS_NULLABLE']=='YES']
-
+                primary_key_param='None'
+                if len(table_data['primary_key_columns']) > 0:
+                    # just use the first primary key column
+                    primary_key_param=f"'{table_data['primary_key_columns'][0]}'"
                 all_column_parameters_joined = ',\n'.join(column_parameters_not_nullable_no_default+column_parameters_not_nullable_default+column_parameters_nullable)
                 column_assignments = [f"{' '*8}self.{column['COLUMN_NAME']} = {column['COLUMN_NAME']}" for column in table_data['columns'].values()]
                 column_assignments_joined = '\n'.join(column_assignments)
-
+                full_table_name=f"{table_data['schema']}.{table_name}" if self.include_schema else table_name
                 output_file.write(f"""
 class {table_name}(SnowflakeTable):
+    _table_name='{full_table_name}'
+    _primary_key_column={primary_key_param}
+
     def __init__(self,
                 session,
 {all_column_parameters_joined}):
-        self._session = session
+        SnowflakeTable.__init__(self,session)
 {column_assignments_joined}
 
     @classmethod
     def create(table_class,
             session,
 {all_column_parameters_joined}):
-        return SnowflakeTable._create_object(**locals())
+        return {table_name}._create_object(**locals())
 """)
                 # That's the constructor and the standard create method taken care of
                 # now we'll generate methods for doing lookups.
@@ -176,7 +187,7 @@ class {table_name}(SnowflakeTable):
                     output_file.write(f"""
     @classmethod
     def lookup_by_{column_name_lower}(cls,session,{column_name_lower}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])}) -> {table_name}:
-        return SnowflakeTable._lookup_by_id(cls,session,'{unique_column_name}',{column_name_lower})
+        return {table_name}._lookup_by_id(session,'{unique_column_name}',{column_name_lower})
                     """)
                 # now handle foreign key lookups, these are instance methods
                 # if the foreign key is in the inbound, the other table will only have a single record
@@ -188,8 +199,8 @@ class {table_name}(SnowflakeTable):
                     
                     output_file.write(f"""
     def get_related_{other_table_name_lower}_for_{('_and_'.join(local_cols)).lower()}(self) -> {other_table_name}:
-        column_values = [getattr(self,local_col) for local_col in {local_cols}]
-        return SnowflakeTable._lookup_by_column_values({other_table_name},self._session,{remote_cols},column_values,True)
+        column_values = dict(zip({remote_cols},[getattr(self,local_col) for local_col in {local_cols}]))
+        return {other_table_name}.lookup_by_column_values(self._session,column_values,True)
                         """)
                 # if the foreign key is in the outbound, the other table will have many records
                 for fk_name,relationship in table_data['multi_lookups'].items():
@@ -201,6 +212,6 @@ class {table_name}(SnowflakeTable):
                     
                     output_file.write(f"""
     def get_related_{other_table_name_plural}_for_{'_and_'.join(local_cols).lower()}_to_{'_and_'.join(remote_cols).lower()}(self) -> List[{other_table_name}]:
-        column_values = [getattr(self,local_col) for local_col in {local_cols}]
-        return SnowflakeTable._lookup_by_column_values({other_table_name},self._session,{remote_cols},column_values,False)
+        column_values = dict(zip({remote_cols},[getattr(self,local_col) for local_col in {local_cols}]))
+        return {other_table_name}.find_by_column_values(self._session,column_values)
                     """)
