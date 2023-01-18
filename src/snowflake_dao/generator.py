@@ -33,6 +33,8 @@ class ObjectsGenerator:
             return 'Dict'
         if snowflake_type=='ARRAY':
             return 'List'
+        if snowflake_type=='BOOLEAN':
+            return 'bool'
         return 'str'
     
     def default_declaration(self,column):
@@ -87,11 +89,13 @@ class ObjectsGenerator:
 
     def get_tables(self):
         return self.session.table(f'{self.database}.INFORMATION_SCHEMA.TABLES') \
-            .filter((col('TABLE_CATALOG')==lit(self.database)) & (col('TABLE_SCHEMA')==lit(self.schema))).collect()
+            .filter((col('TABLE_CATALOG')==lit(self.database)) & (col('TABLE_SCHEMA')==lit(self.schema))) \
+            .order_by([col('TABLE_NAME')]).collect()
 
     def get_columns(self):
         return self.session.table(f'{self.database}.INFORMATION_SCHEMA.COLUMNS') \
-            .filter((col('TABLE_CATALOG')==lit(self.database)) & (col('TABLE_SCHEMA')==lit(self.schema))).collect()
+            .filter((col('TABLE_CATALOG')==lit(self.database)) & (col('TABLE_SCHEMA')==lit(self.schema))) \
+            .order_by([col('TABLE_NAME'),col('ORDINAL_POSITION')]).collect()
 
     def analyse(self):
         unique_keys = self.get_unique_keys()
@@ -148,35 +152,30 @@ class ObjectsGenerator:
                 column_parameters = [f"{' '*16}{column['COLUMN_NAME']}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])}" for column in table_data['columns'].values()]
                 column_parameters_joined = ',\n'.join(column_parameters)
                 # these will appear first in the create method, since no default value can be provided
-                column_parameters_not_nullable_no_default = [f"{' '*12}{column['COLUMN_NAME']}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])}" for column in table_data['columns'].values() if column['IS_NULLABLE']=='NO' and (column['COLUMN_DEFAULT'] is None)]
+                column_parameters_not_nullable_no_default = [f"{' '*4}{column['COLUMN_NAME']}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])}" for column in table_data['columns'].values() if column['IS_NULLABLE']=='NO' and (column['COLUMN_DEFAULT'] is None)]
                 # these will appear next in the create method, since a default value can be set
-                column_parameters_not_nullable_default = [f"{' '*12}{column['COLUMN_NAME']}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])} = {self.default_declaration(column)}" for column in table_data['columns'].values() if column['IS_NULLABLE']=='NO' and (column['COLUMN_DEFAULT'] is not None)]
+                column_parameters_not_nullable_default = [f"{' '*4}{column['COLUMN_NAME']}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])} = {self.default_declaration(column)}" for column in table_data['columns'].values() if column['IS_NULLABLE']=='NO' and (column['COLUMN_DEFAULT'] is not None)]
                 # these will appear next in the create method, since a default value of null can be set
-                column_parameters_nullable = [f"{' '*12}{column['COLUMN_NAME']}:Optional[{self.snowflake_data_type_to_python(column['DATA_TYPE'])}] = None" for column in table_data['columns'].values() if column['IS_NULLABLE']=='YES']
+                column_parameters_nullable = [f"{' '*4}{column['COLUMN_NAME']}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])} = field(default=None)" for column in table_data['columns'].values() if column['IS_NULLABLE']=='YES']
                 primary_key_param='None'
                 if len(table_data['primary_key_columns']) > 0:
                     # just use the first primary key column
                     primary_key_param=f"'{table_data['primary_key_columns'][0]}'"
-                all_column_parameters_joined = ',\n'.join(column_parameters_not_nullable_no_default+column_parameters_not_nullable_default+column_parameters_nullable)
-                column_assignments = [f"{' '*8}self.{column['COLUMN_NAME']} = {column['COLUMN_NAME']}" for column in table_data['columns'].values()]
-                column_assignments_joined = '\n'.join(column_assignments)
+                all_column_parameters_joined = '\n'.join(column_parameters_not_nullable_no_default+column_parameters_not_nullable_default+column_parameters_nullable)
+                #column_assignments = [f"{' '*4}{column['COLUMN_NAME']} = {column['COLUMN_NAME']}" for column in table_data['columns'].values()]
+                #column_assignments_joined = '\n'.join(column_assignments)
                 full_table_name=f"{table_data['schema']}.{table_name}" if self.include_schema else table_name
                 output_file.write(f"""
+@dataclass
 class {table_name}(SnowflakeTable):
     _table_name='{full_table_name}'
     _primary_key_column={primary_key_param}
 
-    def __init__(self,
-                session,
-{all_column_parameters_joined}):
-        SnowflakeTable.__init__(self,session)
-{column_assignments_joined}
+{all_column_parameters_joined}
 
-    @classmethod
-    def create(table_class,
-            session,
-{all_column_parameters_joined}):
-        return {table_name}._create_object(**locals())
+    def create(self,
+            session):
+        return self._create_object(session)
 """)
                 # That's the constructor and the standard create method taken care of
                 # now we'll generate methods for doing lookups.

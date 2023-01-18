@@ -8,7 +8,7 @@ from snowflake.snowpark.functions import col, lit, when_matched, iff, to_timesta
 from typing import Any, Dict, List,Optional, Tuple
 import typing
 import json
-
+from dataclasses import dataclass,field,InitVar
 
 class Sequence():
     def __init__(self,sequence_name:str):
@@ -20,6 +20,26 @@ class Sequence():
 class SnowflakeTable(ABC):
     _table_name:str = None
     _primary_key_column:str = None
+
+    def __getstate__(self):
+       """Used for serializing instances"""
+       
+       # start with a copy so we don't accidentally modify the object state
+       # or cause other conflicts
+       return {k:v for k,v in self.__dict__.items() if not k.startswith('_')}.copy()
+    
+    # This breaks Streamlit pickling :(
+    #def __reduce__(self):
+    #    return self.__getstate__()
+
+    def __setstate__(self, state):
+        """Used for deserializing"""
+        # restore the state which was picklable
+        self.__dict__.update(state)
+    
+    def __getitem__(self, item):
+        """Makes the object subscriptable"""
+        return getattr(self, item)
 
     def __init__(self,session:Session):
         self._session = session
@@ -52,16 +72,15 @@ class SnowflakeTable(ABC):
         # Note that we shouldn't need to do type processing on the value as that would have occurred during instantiation
         return (col(self._primary_key_column)==lit(getattr(self,self._primary_key_column)))
 
-    @classmethod
-    def _create_object(cls,**kwargs):
-        if cls._primary_key_column is None:
+    def _create_object(self,session):
+        if self._primary_key_column is None:
             raise ValueError("Can't create objects unless a primary key is defined")
-        session=kwargs['session']
-        params = {x: kwargs[x] for x in kwargs if x not in ['cls','table_class','session']}
+        state = self.__getstate__()
+        params = {x:state[x] for x in state if x not in ['cls','table_class','session']}
         for k,v in params.items():
             if isinstance(v,Sequence):
                 params[k] = v.nextval(session)
-        target_table = session.table(cls._table_name)
+        target_table = session.table(self._table_name)
         dummy_df = session.create_dataframe([1], schema=["col_a"])
         # snowpark doesn't have an insert abstraction, so we use an unmatchable merge
         target_table.merge(dummy_df,lit(1)==lit(0),[when_not_matched().insert(params)])
@@ -69,7 +88,7 @@ class SnowflakeTable(ABC):
         # may contain snowpark expressions like lits and cols.
         # So we do a lookup by ID value to fetch the record back
         # Note that if the primary key value came from a sequence, it will have been resolved above
-        return cls._lookup_by_id(session,cls._primary_key_column,params[cls._primary_key_column])
+        return self._lookup_by_id(session,self._primary_key_column,params[self._primary_key_column])
     
     @classmethod
     def _lookup_by_id(cls,session,id_column:str,id_value:any) -> SnowflakeTable:
@@ -110,7 +129,11 @@ class SnowflakeTable(ABC):
         type_hints = typing.get_type_hints(cls.__init__)
         for k,v in values.items():
             values[k] = cls._process_type(type_hints[k],k,v)
-        return cls(session,**values)
+        instance = cls(**values)
+        # Normally we could pass the session in and mark it as an InitVar, but that doesn't
+        # work with get_type_hints (https://bugs.python.org/issue44799)
+        instance._session=session
+        return instance
 
     @classmethod
     def lookup_by_column_values(cls,session,values:Dict[str,any],error_on_no_result:bool=False):
