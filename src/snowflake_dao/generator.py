@@ -174,7 +174,7 @@ class {table_name}(SnowflakeTable):
 {all_column_parameters_joined}
 
     def create(self,
-            session):
+            session) -> {table_name}:
         return self._create_object(session)
 """)
                 # That's the constructor and the standard create method taken care of
