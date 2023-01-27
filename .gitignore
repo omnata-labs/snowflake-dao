@@ -2,4 +2,4 @@ app.toml
 dist/
 test_notebook.ipynb
 __pycache__
-snowflake_tables.py
+snowflake_tables*.py

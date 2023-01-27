@@ -187,7 +187,7 @@ class {table_name}(SnowflakeTable):
     @classmethod
     def lookup_by_{column_name_lower}(cls,session,{column_name_lower}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])}) -> {table_name}:
         return {table_name}._lookup_by_id(session,'{unique_column_name}',{column_name_lower})
-                    """)
+""")
                 # now handle foreign key lookups, these are instance methods
                 # if the foreign key is in the inbound, the other table will only have a single record
                 for fk_name,relationship in table_data['single_lookups'].items():
@@ -200,7 +200,7 @@ class {table_name}(SnowflakeTable):
     def get_related_{other_table_name_lower}_for_{('_and_'.join(local_cols)).lower()}(self) -> {other_table_name}:
         column_values = dict(zip({remote_cols},[getattr(self,local_col) for local_col in {local_cols}]))
         return {other_table_name}.lookup_by_column_values(self._session,column_values,True)
-                        """)
+""")
                 # if the foreign key is in the outbound, the other table will have many records
                 for fk_name,relationship in table_data['multi_lookups'].items():
                     other_table_name = relationship['other_table']
@@ -213,4 +213,4 @@ class {table_name}(SnowflakeTable):
     def get_related_{other_table_name_plural}_for_{'_and_'.join(local_cols).lower()}_to_{'_and_'.join(remote_cols).lower()}(self) -> List[{other_table_name}]:
         column_values = dict(zip({remote_cols},[getattr(self,local_col) for local_col in {local_cols}]))
         return {other_table_name}.find_by_column_values(self._session,column_values)
-                    """)
+""")
