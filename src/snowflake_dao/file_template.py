@@ -27,7 +27,7 @@ class SnowflakeTable(ABC):
     _table_name:str = None
     _primary_key_column:str = None
     _session:Session = None
-    __changed_attrs:List=[]
+    __changed_attrs:List[str]=[]
 
     def __getstate__(self):
         """Used for serializing instances"""
@@ -57,8 +57,9 @@ class SnowflakeTable(ABC):
 
     def __setattr__(self, name, value):
         """Track changes to the object for updates"""
-        if hasattr(self,name) and \
-                (self._values_equal(getattr(self,name),value)) and \
+        if not name.startswith('_') and \
+                hasattr(self,name) and \
+                not(self._values_equal(getattr(self,name),value)) and \
                 name not in self.__changed_attrs:
             self.__changed_attrs.append(name)
         super().__setattr__(name, value)
@@ -146,6 +147,7 @@ class SnowflakeTable(ABC):
         result = self.snowpark_table().update(assignments=fields_to_update,condition=match_clause,block=True)
         if fail_if_not_matched and result.rows_updated == 0:
             raise ValueError(f"Record was not updated in {self._table_name}")
+        return result
 
     @classmethod
     def _lookup_by_id(cls,session,id_column:str,id_value:any) -> SnowflakeTable:
