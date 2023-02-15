@@ -1,5 +1,7 @@
 from pathlib import Path
 import typer
+import yaml
+import os
 from snowcli import config
 from snowcli.config import AppConfig
 from ..generator import ObjectsGenerator
@@ -41,4 +43,11 @@ def generate(
         generator = ObjectsGenerator(snowflake_connection_parameters=config.snowflake_connection.ctx,
                                 database=database,schema=schema, include_schema=include_schema)
         generator.analyse()
-        generator.generate(output_file)
+        type_overrides = None
+        exta_imports = None
+        if os.path.exists('python_types.yaml'):
+            with open('python_types.yaml', 'r', encoding='utf-8') as file:
+                data = yaml.load(file, Loader=yaml.FullLoader)
+                exta_imports = data['imports']
+                type_overrides = data['type_overrides']
+        generator.generate(output_file,exta_imports,type_overrides)

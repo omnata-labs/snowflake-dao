@@ -3,9 +3,11 @@ Generates the Data Access Objects
 """
 import json
 import os
+from pathlib import Path
+from typing import Dict
 from snowflake.snowpark import Session
 from snowflake.snowpark.functions import col, lit
-from . import file_template
+from jinja2 import Environment, FileSystemLoader
 
 class ObjectsGenerator:
     """
@@ -29,8 +31,10 @@ class ObjectsGenerator:
             return 'int'
         if snowflake_type=='VARCHAR':
             return 'str'
-        if snowflake_type=='VARIANT':
+        if snowflake_type=='OBJECT':
             return 'Dict'
+        if snowflake_type=='VARIANT':
+            return 'Any'
         if snowflake_type=='ARRAY':
             return 'List'
         if snowflake_type=='BOOLEAN':
@@ -138,25 +142,35 @@ class ObjectsGenerator:
                 "schema":table['TABLE_SCHEMA'],
                 "columns":{col['COLUMN_NAME']:col for col in columns if col['TABLE_NAME']==table_name}
             }
+    def python_data_type(self,type_overrides:Dict,column:Dict):
+        if column['TABLE_NAME'] in type_overrides:
+            if column['COLUMN_NAME'] in type_overrides[column['TABLE_NAME']]:
+                return type_overrides[column['TABLE_NAME']][column['COLUMN_NAME']]
+        return self.snowflake_data_type_to_python(column['DATA_TYPE'])
 
-    def generate(self,file_name:str):
+    def generate(self,file_name:str,exta_imports:str = None,type_overrides:Dict=None):
         if len(self.tables)==0:
             print("No tables to output. Did you analyse the schema first?")
             return
         print(f"Generating {file_name}")
+        templates_path = os.path.join(Path(__file__).parent)
+        environment = Environment(loader=FileSystemLoader(templates_path))
+        template = environment.get_template('file_template.jinja')
+        content = template.render({
+            "imports": exta_imports
+        })
+
         with open(file_name, 'w',encoding='utf-8') as output_file:
-            template_file = open(os.path.abspath(file_template.__file__), "r",encoding='utf-8')
-            output_file.write(template_file.read())
-            template_file.close()
+            output_file.write(content)
             for table_name,table_data in self.tables.items():
-                column_parameters = [f"{' '*16}{column['COLUMN_NAME']}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])}" for column in table_data['columns'].values()]
+                column_parameters = [f"{' '*16}{column['COLUMN_NAME']}:{self.python_data_type(type_overrides,column)}" for column in table_data['columns'].values()]
                 column_parameters_joined = ',\n'.join(column_parameters)
                 # these will appear first in the create method, since no default value can be provided
-                column_parameters_not_nullable_no_default = [f"{' '*4}{column['COLUMN_NAME']}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])}" for column in table_data['columns'].values() if column['IS_NULLABLE']=='NO' and (column['COLUMN_DEFAULT'] is None)]
+                column_parameters_not_nullable_no_default = [f"{' '*4}{column['COLUMN_NAME']}:{self.python_data_type(type_overrides,column)}" for column in table_data['columns'].values() if column['IS_NULLABLE']=='NO' and (column['COLUMN_DEFAULT'] is None)]
                 # these will appear next in the create method, since a default value can be set
-                column_parameters_not_nullable_default = [f"{' '*4}{column['COLUMN_NAME']}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])} = {self.default_declaration(column)}" for column in table_data['columns'].values() if column['IS_NULLABLE']=='NO' and (column['COLUMN_DEFAULT'] is not None)]
+                column_parameters_not_nullable_default = [f"{' '*4}{column['COLUMN_NAME']}:{self.python_data_type(type_overrides,column)} = {self.default_declaration(column)}" for column in table_data['columns'].values() if column['IS_NULLABLE']=='NO' and (column['COLUMN_DEFAULT'] is not None)]
                 # these will appear next in the create method, since a default value of null can be set
-                column_parameters_nullable = [f"{' '*4}{column['COLUMN_NAME']}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])} = field(default=None)" for column in table_data['columns'].values() if column['IS_NULLABLE']=='YES']
+                column_parameters_nullable = [f"{' '*4}{column['COLUMN_NAME']}:{self.python_data_type(type_overrides,column)} = field(default=None)" for column in table_data['columns'].values() if column['IS_NULLABLE']=='YES']
                 primary_key_param='None'
                 if len(table_data['primary_key_columns']) > 0:
                     # just use the first primary key column
@@ -185,7 +199,7 @@ class {table_name}(SnowflakeTable):
                     column_name_lower = unique_column_name.lower()
                     output_file.write(f"""
     @classmethod
-    def lookup_by_{column_name_lower}(cls,session,{column_name_lower}:{self.snowflake_data_type_to_python(column['DATA_TYPE'])}) -> {table_name}:
+    def lookup_by_{column_name_lower}(cls,session,{column_name_lower}:{self.python_data_type(type_overrides,column)}) -> {table_name}:
         return {table_name}._lookup_by_id(session,'{unique_column_name}',{column_name_lower})
 """)
                 # now handle foreign key lookups, these are instance methods

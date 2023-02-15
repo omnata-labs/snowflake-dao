@@ -8,6 +8,8 @@ from snowflake.snowpark import Column,Table,Session
 from snowflake.snowpark.table import UpdateResult
 from snowflake.snowpark._internal.analyzer.expression import Literal
 from snowflake.snowpark.functions import col, lit, when_matched, iff, to_timestamp,parse_json,to_varchar,object_construct,when_not_matched,sql_expr
+{{imports}}import pydantic
+from pydantic import BaseModel,Field,validator,parse_raw_as # pylint: disable=no-name-in-module
 from typing import Any, Dict, List,Optional, Tuple
 import typing
 import json
@@ -92,7 +94,7 @@ class SnowflakeTable(ABC):
         """
         Returns a JSON representation of the fields in this object
         """
-        return json.dumps({k:v for k,v in self.__dict__.items() if not k.startswith('_')})
+        return json.dumps(self.__getstate__(), indent=4, sort_keys=True, default=pydantic.json.pydantic_encoder)
 
     def snowpark_table(self) -> Table:
         """
@@ -118,6 +120,10 @@ class SnowflakeTable(ABC):
         for k,v in params.items():
             if isinstance(v,Sequence):
                 params[k] = v.nextval(session)
+            elif isinstance(v,dict) or isinstance(v,list):
+                # if literal dicts or lists have been provided (vs snowpark functions),
+                # these could be pydantic models so we'll dump and wrap
+                params[k] = parse_json(lit(json.dumps(v,default=pydantic.json.pydantic_encoder)))
         target_table = session.table(self._table_name)
         dummy_df = session.create_dataframe([1], schema=["col_a"])
         # snowpark doesn't have an insert abstraction, so we use an unmatchable merge
@@ -140,7 +146,7 @@ class SnowflakeTable(ABC):
             return None
         for k,v in fields_to_update.items():
             if isinstance(v,dict) or isinstance(v,list):
-                fields_to_update[k] = parse_json(lit(json.dumps(v)))
+                fields_to_update[k] = parse_json(lit(json.dumps(v,default=pydantic.json.pydantic_encoder)))
             else:
                 fields_to_update[k] = lit(v)
         #colified_fields = {col(k):v for k,v in fields_to_update.items()}
@@ -148,6 +154,16 @@ class SnowflakeTable(ABC):
         if fail_if_not_matched and result.rows_updated == 0:
             raise ValueError(f"Record was not updated in {self._table_name}")
         return result
+    
+    def refresh_object(self):
+        """
+        Reloads this object from Snowflake by fetching via primary key.
+        """
+        if self._primary_key_column is None:
+            raise ValueError("Can't refresh objects unless a primary key is defined")
+        refreshed_object = self._lookup_by_id(self._session,self._primary_key_column,getattr(self,self._primary_key_column))
+        for attr in vars(refreshed_object):
+            setattr(self, attr, getattr(refreshed_object, attr))
 
     @classmethod
     def _lookup_by_id(cls,session,id_column:str,id_value:any) -> SnowflakeTable:
@@ -179,8 +195,10 @@ class SnowflakeTable(ABC):
                 actual_type = actual_types[0]
             if actual_type==int:
                 return int(column_value)
-            elif actual_type == typing.Dict or actual_type == typing.List:
-                return json.loads(column_value) if column_value else None # Python connector returns strings for variant columns
+            elif actual_type == typing.Dict or actual_type == typing.List or typing.get_origin(actual_type) in [list,dict]:
+                # Python connector returns strings for object and array columns
+                # using pydantic's parse_raw_as is like a json.loads, but will include instances of BaseModel subclasses
+                return parse_raw_as(actual_type,column_value)
             return column_value
 
     @classmethod

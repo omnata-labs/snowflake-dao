@@ -53,5 +53,16 @@ print(cc_record)
 date_dim = cc_record.get_related_date_dim_for_cc_open_date_sk()
 print(date_dim)
 date_dim.get_related_call_centers_for_d_date_sk_to_cc_open_date_sk()
+```
 
+You can also create a file named `python_types.yaml` and use it to override the python class for a particular column.
+This is intended to be used with OBJECT/ARRAY columns to designate pydantic classes extended from BaseModel. In doing this, you can enforce a schema inside semi-structured columns.
+
+The file should look like this:
+```
+imports: |
+  from my_module import MyClass
+type_overrides:
+  TABLE_1:
+    COLUMN_A: MyClass
 ```
