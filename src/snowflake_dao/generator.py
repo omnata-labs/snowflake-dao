@@ -170,7 +170,7 @@ class ObjectsGenerator:
                 # these will appear next in the create method, since a default value can be set
                 column_parameters_not_nullable_default = [f"{' '*4}{column['COLUMN_NAME']}:{self.python_data_type(type_overrides,column)} = {self.default_declaration(column)}" for column in table_data['columns'].values() if column['IS_NULLABLE']=='NO' and (column['COLUMN_DEFAULT'] is not None)]
                 # these will appear next in the create method, since a default value of null can be set
-                column_parameters_nullable = [f"{' '*4}{column['COLUMN_NAME']}:{self.python_data_type(type_overrides,column)} = field(default=None)" for column in table_data['columns'].values() if column['IS_NULLABLE']=='YES']
+                column_parameters_nullable = [f"{' '*4}{column['COLUMN_NAME']}:Optional[{self.python_data_type(type_overrides,column)}] = field(default=None)" for column in table_data['columns'].values() if column['IS_NULLABLE']=='YES']
                 primary_key_param='None'
                 if len(table_data['primary_key_columns']) > 0:
                     # just use the first primary key column
