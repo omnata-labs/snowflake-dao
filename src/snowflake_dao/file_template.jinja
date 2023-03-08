@@ -23,7 +23,7 @@ class Sequence():
     def __init__(self,sequence_name:str):
         self.sequence_name = sequence_name
 
-    def nextval(self,session):
+    def nextval(self,session:Session):
         return session.sql(f"select {self.sequence_name}.nextval").collect()[0].NEXTVAL
 
 class SnowflakeTable(ABC):
@@ -113,7 +113,7 @@ class SnowflakeTable(ABC):
         # Note that we shouldn't need to do type processing on the value as that would have occurred during instantiation
         return (col(self._primary_key_column)==lit(getattr(self,self._primary_key_column)))
 
-    def _create_object(self,session):
+    def _create_object(self,session:Session):
         if self._primary_key_column is None:
             raise ValueError("Can't create objects unless a primary key is defined")
         state = self.__getstate__()
@@ -171,7 +171,7 @@ class SnowflakeTable(ABC):
             setattr(self, attr, getattr(refreshed_object, attr))
 
     @classmethod
-    def _lookup_by_id(cls,session,id_column:str,id_value:any) -> SnowflakeTable:
+    def _lookup_by_id(cls,session:Session,id_column:str,id_value:any) -> SnowflakeTable:
         """
         Fetches a record via its primary key value. Automatically does type conversion to combat ints-as-floats etc
         """
@@ -201,15 +201,19 @@ class SnowflakeTable(ABC):
             if actual_type==int:
                 return int(column_value)
             elif inspect.isclass(actual_type) and issubclass(actual_type,BaseModel):
+                if isinstance(column_value,dict):
+                    return parse_obj_as(actual_type,column_value)
                 return parse_raw_as(actual_type,column_value)
             elif actual_type == typing.Dict or actual_type == typing.List or typing.get_origin(actual_type) in [list,dict]:
                 # Python connector returns strings for object and array columns
                 # using pydantic's parse_raw_as is like a json.loads, but will include instances of BaseModel subclasses
+                if isinstance(column_value,dict) or isinstance(column_value,list):
+                    return parse_obj_as(actual_type,column_value)
                 return parse_raw_as(actual_type,column_value)
             return column_value
 
     @classmethod
-    def _process_types(cls,session,values):
+    def _process_types(cls,session:Session,values):
         type_hints = typing.get_type_hints(cls.__init__)
         for k,v in values.items():
             values[k] = cls._process_type(type_hints[k],k,v)

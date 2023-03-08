@@ -13,7 +13,9 @@ dependencies = [
   "snowflake-connector-python",
   "snowflake-snowpark-python",
   "snowflake-cli-labs",
-  "typer"
+  "pydantic",
+  "typer",
+  "jinja2"
 ]
 readme = "README.md"
 license = { file="LICENSE" }

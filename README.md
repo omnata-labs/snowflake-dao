@@ -21,13 +21,14 @@ Right now I just wanted something simple and self-contained.
 # To install
 Right now there's no PyPi package, so:
 ```
+pip install build
 python3 -m build
 pip install dist/snowflake_dao-0.0.1-py3-none-any.whl --force-reinstall
 ```
 
 # To run
 ```
-snowflake_dao SFC_SAMPLES_SAMPLE_DATA TPCDS_SF100TCL
+snowflake_dao SFC_SAMPLES_SAMPLE_DATA TPCDS_SF10TCL
 ```
 
 # To use
