@@ -89,6 +89,10 @@ class ObjectsGenerator:
             "pk_table_name";""").collect()
         for row in rows:
             row_dict = row.as_dict()
+            if self.ignore_table_regex is not None:
+                if re.match(self.ignore_table_regex,row['fk_table_name']) or \
+                    re.match(self.ignore_table_regex,row['pk_table_name']):
+                    continue
             row_dict['pk_column_names'] = json.loads(row_dict['pk_column_names'])
             row_dict['fk_column_names'] = json.loads(row_dict['fk_column_names'])
             foreign_keys.append(row_dict)
