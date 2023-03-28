@@ -27,7 +27,12 @@ def generate(
             include_schema: bool = typer.Option(
                 True, '-s', '--include-schema',
                 help='Include the schema name in the Data Access Objects'
-            )):
+            ),
+            ignore_table_regex: str = typer.Option(
+                None, '-i', '--ignore-table-regex',
+                help='A Regular Expression for tables to ignore'
+            )
+            ):
     """
     Generates Data Access Objects for a Snowflake schema
     """
@@ -41,7 +46,8 @@ def generate(
     if config.isAuth():
         config.connectToSnowflake()
         generator = ObjectsGenerator(snowflake_connection_parameters=config.snowflake_connection.ctx,
-                                database=database,schema=schema, include_schema=include_schema)
+                                database=database,schema=schema, include_schema=include_schema,
+                                ignore_table_regex=ignore_table_regex)
         generator.analyse()
         type_overrides = None
         exta_imports = None

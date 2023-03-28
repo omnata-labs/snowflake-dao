@@ -3,8 +3,9 @@ Generates the Data Access Objects
 """
 import json
 import os
+import re
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 from snowflake.snowpark import Session
 from snowflake.snowpark.functions import col, lit
 from jinja2 import Environment, FileSystemLoader
@@ -13,7 +14,8 @@ class ObjectsGenerator:
     """
     Uploads plugins to a Snowflake account and registers them with the Omnata app
     """
-    def __init__(self,snowflake_connection_parameters,database:str, schema:str, include_schema:bool = True):
+    def __init__(self,snowflake_connection_parameters,database:str, schema:str, include_schema:bool = True,
+                 ignore_table_regex:Optional[str]=None):
         if snowflake_connection_parameters.__class__.__name__ == 'SnowflakeConnection':
             builder = Session.builder
             builder._options['connection']=snowflake_connection_parameters
@@ -24,6 +26,7 @@ class ObjectsGenerator:
         self.schema = schema
         self.tables={}
         self.include_schema = include_schema
+        self.ignore_table_regex = ignore_table_regex
 
     
     def snowflake_data_type_to_python(self,snowflake_type:str):
@@ -116,6 +119,9 @@ class ObjectsGenerator:
         print(f"Found {len(columns)} columns")
         
         for table in tables:
+            if self.ignore_table_regex is not None and re.match(self.ignore_table_regex,table['TABLE_NAME']):
+                print(f"Ignoring table {table['TABLE_NAME']}")
+                continue
             table_name = table['TABLE_NAME']
             pks = [key_column['column_name'] for key_column in primary_keys if key_column['table_name']==table_name]
             uniq = [key_column['column_name'] for key_column in unique_keys if key_column['table_name']==table_name]
