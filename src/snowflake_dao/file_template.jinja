@@ -11,6 +11,7 @@ from snowflake.snowpark.functions import col, lit, when_matched, iff, to_timesta
 {{imports}}import pydantic
 from pydantic import BaseModel,Field,validator,parse_raw_as,parse_obj_as # pylint: disable=no-name-in-module
 from typing import Any, Dict, List,Optional, Tuple
+from enum import Enum
 import typing
 import json
 import logging
@@ -176,12 +177,21 @@ class SnowflakeTable(ABC):
         Fetches a record via its primary key value. Automatically does type conversion to combat ints-as-floats etc
         """
         type_hint = typing.get_type_hints(cls.__init__)[id_column]
-        results = session.table(cls._table_name).where((col(id_column)==lit(cls._process_type(type_hint,id_column,id_value)))).collect()
+        results = session.table(cls._table_name).where((col(id_column)==lit(cls._prepare_value_for_snowpark(cls._process_type(type_hint,id_column,id_value))))).collect()
         if len(results) == 0:
             raise ValueError(f'No {cls._table_name} found with {id_column} {id_value}')
         if len(results) > 1:
             raise ValueError(f'Too many results for {cls._table_name} with {id_column} {id_value} ({len(results)})')
         return cls._process_types(session,results[0].as_dict())
+
+    @classmethod
+    def _prepare_value_for_snowpark(cls,value:Any):
+        """
+        The result of _process_type is not always compatible with Snowflake lit()s, this method deals with that.
+        """
+        if isinstance(value,Enum):
+            return value.value
+        return value
 
     @classmethod
     def _process_type(cls,column_type_hint:Any,column_name:str,column_value:Any):
@@ -200,8 +210,9 @@ class SnowflakeTable(ABC):
                 actual_type = actual_types[0]
             if actual_type==int:
                 return int(column_value)
-            elif inspect.isclass(actual_type) and issubclass(actual_type,BaseModel):
-                if isinstance(column_value,dict):
+            elif inspect.isclass(actual_type) and (issubclass(actual_type,BaseModel) or issubclass(actual_type,Enum)):
+                # pydantic can check standard enums
+                if isinstance(column_value,dict) or issubclass(actual_type,Enum):
                     return parse_obj_as(actual_type,column_value)
                 return parse_raw_as(actual_type,column_value)
             elif actual_type == typing.Dict or actual_type == typing.List or typing.get_origin(actual_type) in [list,dict]:
@@ -257,7 +268,7 @@ class SnowflakeTable(ABC):
         where_clauses = (lit(1)==lit(1))
         type_hints = typing.get_type_hints(cls.__init__)
         for column_name,column_value in values.items():
-            where_clauses = where_clauses & (col(column_name)==lit(cls._process_type(type_hints[column_name],column_name,column_value)))
+            where_clauses = where_clauses & (col(column_name)==lit(cls._prepare_value_for_snowpark(cls._process_type(type_hints[column_name],column_name,column_value))))
         return_values:List[cls]=[]
         table = cls._table_name if query_stream is None else query_stream
         query = session.table(table).where(where_clauses)
