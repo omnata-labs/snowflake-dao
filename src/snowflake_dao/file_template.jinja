@@ -215,6 +215,11 @@ class SnowflakeTable(ABC):
                 if isinstance(column_value,dict) or issubclass(actual_type,Enum):
                     return parse_obj_as(actual_type,column_value)
                 return parse_raw_as(actual_type,column_value)
+            elif hasattr(actual_type,'__metadata__'):
+                # nested discriminated unions are not considered a class, but can be parsed with pydantic
+                if isinstance(column_value,dict) or isinstance(column_value,list):
+                    return parse_obj_as(actual_type,column_value)
+                return parse_raw_as(actual_type,column_value)
             elif actual_type == typing.Dict or actual_type == typing.List or typing.get_origin(actual_type) in [list,dict]:
                 # Python connector returns strings for object and array columns
                 # using pydantic's parse_raw_as is like a json.loads, but will include instances of BaseModel subclasses
