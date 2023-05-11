@@ -153,6 +153,8 @@ class SnowflakeTable(ABC):
                 v = v.dict()
             if isinstance(v,dict) or isinstance(v,list):
                 fields_to_update[k] = parse_json(lit(json.dumps(v,default=pydantic.json.pydantic_encoder)))
+            elif isinstance(v,Enum):
+                fields_to_update[k] = lit(v.value)
             else:
                 fields_to_update[k] = lit(v)
         #colified_fields = {col(k):v for k,v in fields_to_update.items()}
