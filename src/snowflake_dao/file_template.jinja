@@ -10,7 +10,7 @@ from snowflake.snowpark._internal.analyzer.expression import Literal
 from snowflake.snowpark.functions import col, lit, when_matched, iff, to_timestamp,parse_json,to_varchar,object_construct,when_not_matched,sql_expr
 {{imports}}import pydantic
 from pydantic import BaseModel,Field,validator,parse_raw_as,parse_obj_as # pylint: disable=no-name-in-module
-from typing import Any, Dict, List,Optional, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 from enum import Enum
 import typing
 import json
@@ -140,7 +140,7 @@ class SnowflakeTable(ABC):
         # Note that if the primary key value came from a sequence, it will have been resolved above
         return self._lookup_by_id(session,self._primary_key_column,params[self._primary_key_column])
     
-    def delete_object(self,fail_if_not_matched:bool=True) -> Optional[DeleteResult]:
+    def delete_object(self,fail_if_not_matched:bool=True) -> DeleteResult:
         """
         Deletes the current object using its primary key
         """
@@ -150,7 +150,7 @@ class SnowflakeTable(ABC):
             raise ValueError(f"Record was not deleted in {self.table_name}")
         return result
 
-    def update_object(self,fail_if_not_matched:bool=True) -> Optional[UpdateResult]:
+    def update_object(self,fail_if_not_matched:bool=True) -> UpdateResult:
         """
         Updates the current object using its primary key and the current property values.
         The update statement will include all fields which have been updated since instantiation.
@@ -186,14 +186,16 @@ class SnowflakeTable(ABC):
             setattr(self, attr, getattr(refreshed_object, attr))
 
     @classmethod
-    def _lookup_by_id(cls,session:Session,id_column:str,id_value:any) -> SnowflakeTable:
+    def _lookup_by_id(cls,session:Session,id_column:str,id_value:any,fail_if_not_matched:bool=True) -> SnowflakeTable:
         """
         Fetches a record via its primary key value. Automatically does type conversion to combat ints-as-floats etc
         """
         type_hint = typing.get_type_hints(cls.__init__)[id_column]
         results = session.table(cls.table_name).where((col(id_column)==lit(cls._prepare_value_for_snowpark(cls._process_type(type_hint,id_column,id_value))))).collect()
         if len(results) == 0:
-            raise ValueError(f'No {cls.table_name} found with {id_column} {id_value}')
+            if fail_if_not_matched:
+                raise ValueError(f'No {cls.table_name} found with {id_column} {id_value}')
+            return None
         if len(results) > 1:
             raise ValueError(f'Too many results for {cls.table_name} with {id_column} {id_value} ({len(results)})')
         return cls._process_types(session,results[0].as_dict())
@@ -219,19 +221,20 @@ class SnowflakeTable(ABC):
             # if it's an optional type but the value isn't null, we'll find the actual type to cast with
             if typing.get_origin(column_type_hint)==typing.Union:
                 actual_types = [t for t in typing.get_args(column_type_hint) if t!=type(None)]
-                if len(actual_types)!=1:
+                if len(actual_types)==1:
+                    actual_type = actual_types[0]
+                elif all([issubclass(t,BaseModel) for t in actual_types]):
+                    # if there's more than one type in the union and they are all BaseModels, assume it's a discriminated union
+                    if isinstance(column_value,dict) or isinstance(column_value,list):
+                        return parse_obj_as(actual_type,column_value)
+                    return parse_raw_as(actual_type,column_value)
+                else:
                     raise ValueError(f"Can't determine the real type of column {column_name} based on its type hints ({column_type_hint})")
-                actual_type = actual_types[0]
             if actual_type==int:
                 return int(column_value)
             elif inspect.isclass(actual_type) and (issubclass(actual_type,BaseModel) or issubclass(actual_type,Enum)):
                 # pydantic can check standard enums
                 if isinstance(column_value,dict) or issubclass(actual_type,Enum):
-                    return parse_obj_as(actual_type,column_value)
-                return parse_raw_as(actual_type,column_value)
-            elif hasattr(actual_type,'__metadata__'):
-                # nested discriminated unions are not considered a class, but can be parsed with pydantic
-                if isinstance(column_value,dict) or isinstance(column_value,list):
                     return parse_obj_as(actual_type,column_value)
                 return parse_raw_as(actual_type,column_value)
             elif actual_type == typing.Dict or actual_type == typing.List or typing.get_origin(actual_type) in [list,dict]:

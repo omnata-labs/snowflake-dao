@@ -192,13 +192,13 @@ class ObjectsGenerator:
                 output_file.write(f"""
 @dataclass
 class {table_name}(SnowflakeTable):
-    _table_name='{full_table_name}'
+    table_name='{full_table_name}'
     _primary_key_column={primary_key_param}
 
 {all_column_parameters_joined}
 
     def create(self,
-            session) -> {table_name}:
+            session:Session) -> {table_name}:
         return self._create_object(session)
 """)
                 # That's the constructor and the standard create method taken care of
@@ -209,8 +209,8 @@ class {table_name}(SnowflakeTable):
                     column_name_lower = unique_column_name.lower()
                     output_file.write(f"""
     @classmethod
-    def lookup_by_{column_name_lower}(cls,session,{column_name_lower}:{self.python_data_type(type_overrides,column)}) -> {table_name}:
-        return {table_name}._lookup_by_id(session,'{unique_column_name}',{column_name_lower})
+    def lookup_by_{column_name_lower}(cls,session:Session,{column_name_lower}:{self.python_data_type(type_overrides,column)},fail_if_not_matched:bool=True) -> {table_name}:
+        return {table_name}._lookup_by_id(session,'{unique_column_name}',{column_name_lower},fail_if_not_matched)
 """)
                 # now handle foreign key lookups, these are instance methods
                 # if the foreign key is in the inbound, the other table will only have a single record
