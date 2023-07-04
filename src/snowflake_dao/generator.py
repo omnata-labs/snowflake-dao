@@ -199,7 +199,7 @@ class {table_name}(SnowflakeTable):
 
     def create(self,
             session:Session) -> {table_name}:
-        return self._create_object(session)
+        return cast({table_name},self._create_object(session))
 """)
                 # That's the constructor and the standard create method taken care of
                 # now we'll generate methods for doing lookups.

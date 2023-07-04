@@ -4,3 +4,4 @@ test_notebook.ipynb
 __pycache__
 snowflake_tables*.py
 python_types.yaml
+information_schema_tables.py
