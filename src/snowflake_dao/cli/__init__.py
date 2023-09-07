@@ -2,8 +2,7 @@ from pathlib import Path
 import typer
 import yaml
 import os
-from snowcli import config
-from snowcli.config import AppConfig
+from snowcli.snow_connector import connect_to_snowflake
 from ..generator import ObjectsGenerator
 
 app = typer.Typer(context_settings={"help_option_names": ["-h", "--help"]})
@@ -36,24 +35,16 @@ def generate(
     """
     Generates Data Access Objects for a Snowflake schema
     """
-    env_conf = AppConfig().config.get(environment)
-    if env_conf is None:
-        print(
-            f"The {environment} environment is not configured in app.toml "
-            f"yet, please run `snow configure {environment}` first before continuing.",
-        )
-        raise typer.Abort()
-    if config.isAuth():
-        config.connectToSnowflake()
-        generator = ObjectsGenerator(snowflake_connection_parameters=config.snowflake_connection.ctx,
-                                database=database,schema=schema, include_schema=include_schema,
-                                ignore_table_regex=ignore_table_regex)
-        generator.analyse()
-        type_overrides = None
-        exta_imports = None
-        if os.path.exists('python_types.yaml'):
-            with open('python_types.yaml', 'r', encoding='utf-8') as file:
-                data = yaml.load(file, Loader=yaml.FullLoader)
-                exta_imports = data['imports']
-                type_overrides = data['type_overrides']
-        generator.generate(output_file,exta_imports,type_overrides)
+    snowflake_connection = connect_to_snowflake(connection_name=environment)
+    generator = ObjectsGenerator(snowflake_connection_parameters=snowflake_connection.ctx,
+                            database=database,schema=schema, include_schema=include_schema,
+                            ignore_table_regex=ignore_table_regex)
+    generator.analyse()
+    type_overrides = None
+    exta_imports = None
+    if os.path.exists('python_types.yaml'):
+        with open('python_types.yaml', 'r', encoding='utf-8') as file:
+            data = yaml.load(file, Loader=yaml.FullLoader)
+            exta_imports = data['imports']
+            type_overrides = data['type_overrides']
+    generator.generate(output_file,exta_imports,type_overrides)

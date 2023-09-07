@@ -12,7 +12,7 @@ description = "A Data Access Objects generator for Snowflake"
 dependencies = [
   "snowflake-connector-python",
   "snowflake-snowpark-python",
-  "snowflake-cli-labs",
+  "snowflake-cli-labs==1.1.0",
   "pydantic",
   "typer",
   "jinja2"

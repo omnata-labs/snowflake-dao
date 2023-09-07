@@ -42,6 +42,8 @@ class ObjectsGenerator:
             return 'List'
         if snowflake_type=='BOOLEAN':
             return 'bool'
+        if snowflake_type=='TIMESTAMP_LTZ':
+            return 'datetime'
         return 'str'
     
     def default_declaration(self,column):
@@ -51,20 +53,21 @@ class ObjectsGenerator:
         if '.NEXTVAL' in column['COLUMN_DEFAULT']:
             sequence_name = column['COLUMN_DEFAULT'].split('.')[-2]
             full_sequence_name = f"{column['TABLE_SCHEMA']}.{sequence_name}" if self.include_schema else sequence_name
-            return f"Sequence('{full_sequence_name}')"
+            return f"Sequence('{full_sequence_name}') # type: ignore"
         # for other defaults, we wrap it in a snowpark sql_expr so it gets evaluated
-        return f"sql_expr(\"\"\"{column['COLUMN_DEFAULT']}\"\"\")"
+        return f"sql_expr(\"\"\"{column['COLUMN_DEFAULT']}\"\"\") # type: ignore"
     
     def get_unique_keys(self):
         self.session.sql(f"""SHOW UNIQUE KEYS in SCHEMA {self.database}.{self.schema};""").collect()
-        return self.session.sql("""select * from table(result_scan(LAST_QUERY_ID()));""").collect()
+        return self.session.sql("""select * from table(result_scan(LAST_QUERY_ID())) order by "table_name","column_name","constraint_name";""").collect()
     
     def get_primary_keys(self):
         self.session.sql(f"""SHOW PRIMARY KEYS in SCHEMA {self.database}.{self.schema};""").collect()
-        return self.session.sql("""select * from table(result_scan(LAST_QUERY_ID()));""").collect()
+        return self.session.sql("""select * from table(result_scan(LAST_QUERY_ID())) order by "table_name","column_name";""").collect()
 
     def get_foreign_keys(self):
-        self.session.sql(f"""SHOW IMPORTED KEYS in SCHEMA {self.database}.{self.schema};""").collect()
+        self.session.sql(f"""SHOW IMPORTED KEYS in SCHEMA {self.database}.{self.schema}""").collect()
+        self.session.sql("""select * from table(result_scan(LAST_QUERY_ID())) order by "pk_table_name","pk_column_name","fk_table_name","fk_column_name";""").collect()
         # creates a "single foreign key relationship" record by aggregating all the columns into an array
         foreign_keys = []
         rows = self.session.sql("""select "pk_database_name",
@@ -176,11 +179,11 @@ class ObjectsGenerator:
                 column_parameters = [f"{' '*16}{column['COLUMN_NAME']}:{self.python_data_type(type_overrides,column)}" for column in table_data['columns'].values()]
                 column_parameters_joined = ',\n'.join(column_parameters)
                 # these will appear first in the create method, since no default value can be provided
-                column_parameters_not_nullable_no_default = [f"{' '*4}{column['COLUMN_NAME']}:{self.python_data_type(type_overrides,column)}" for column in table_data['columns'].values() if column['IS_NULLABLE']=='NO' and (column['COLUMN_DEFAULT'] is None)]
+                column_parameters_not_nullable_no_default = [f"{' '*4}{column['COLUMN_NAME']}: {self.python_data_type(type_overrides,column)}" for column in table_data['columns'].values() if column['IS_NULLABLE']=='NO' and (column['COLUMN_DEFAULT'] is None)]
                 # these will appear next in the create method, since a default value can be set
-                column_parameters_not_nullable_default = [f"{' '*4}{column['COLUMN_NAME']}:{self.python_data_type(type_overrides,column)} = {self.default_declaration(column)}" for column in table_data['columns'].values() if column['IS_NULLABLE']=='NO' and (column['COLUMN_DEFAULT'] is not None)]
+                column_parameters_not_nullable_default = [f"{' '*4}{column['COLUMN_NAME']}: {self.python_data_type(type_overrides,column)} = {self.default_declaration(column)}" for column in table_data['columns'].values() if column['IS_NULLABLE']=='NO' and (column['COLUMN_DEFAULT'] is not None)]
                 # these will appear next in the create method, since a default value of null can be set
-                column_parameters_nullable = [f"{' '*4}{column['COLUMN_NAME']}:Optional[{self.python_data_type(type_overrides,column)}] = field(default=None)" for column in table_data['columns'].values() if column['IS_NULLABLE']=='YES']
+                column_parameters_nullable = [f"{' '*4}{column['COLUMN_NAME']}: Optional[{self.python_data_type(type_overrides,column)}] = field(default=None)" for column in table_data['columns'].values() if column['IS_NULLABLE']=='YES']
                 primary_key_param='None'
                 if len(table_data['primary_key_columns']) > 0:
                     # just use the first primary key column
@@ -209,8 +212,8 @@ class {table_name}(SnowflakeTable):
                     column_name_lower = unique_column_name.lower()
                     output_file.write(f"""
     @classmethod
-    def lookup_by_{column_name_lower}(cls,session:Session,{column_name_lower}:{self.python_data_type(type_overrides,column)},fail_if_not_matched:bool=True) -> {table_name}:
-        return {table_name}._lookup_by_id(session,'{unique_column_name}',{column_name_lower},fail_if_not_matched)
+    def lookup_by_{column_name_lower}(cls,session:Session,{column_name_lower}:{self.python_data_type(type_overrides,column)},fail_if_not_matched:bool=True) -> Optional[{table_name}]:
+        return {table_name}._lookup_by_id(session,'{unique_column_name}',{column_name_lower},fail_if_not_matched) # type: ignore
 """)
                 # now handle foreign key lookups, these are instance methods
                 # if the foreign key is in the inbound, the other table will only have a single record
@@ -223,7 +226,7 @@ class {table_name}(SnowflakeTable):
                     output_file.write(f"""
     def get_related_{other_table_name_lower}_for_{('_and_'.join(local_cols)).lower()}(self) -> {other_table_name}:
         column_values = dict(zip({remote_cols},[getattr(self,local_col) for local_col in {local_cols}]))
-        return {other_table_name}.lookup_by_column_values(self._session,column_values,True)
+        return {other_table_name}.lookup_by_column_values(self._session,column_values,True) # type: ignore
 """)
                 # if the foreign key is in the outbound, the other table will have many records
                 for fk_name,relationship in table_data['multi_lookups'].items():

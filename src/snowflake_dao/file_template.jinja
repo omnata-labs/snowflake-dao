@@ -12,6 +12,7 @@ from abc import ABC
 from dataclasses import dataclass, field, InitVar
 from enum import Enum
 from typing import Any, Dict, List, Tuple, Optional, cast
+from datetime import datetime
 
 {{imports}}import pydantic
 from pydantic import (BaseModel,
@@ -184,6 +185,8 @@ class SnowflakeTable(ABC):
                 fields_to_update[k] = parse_json(lit(json.dumps(v,default=pydantic.json.pydantic_encoder))) # type: ignore
             elif isinstance(v,Enum):
                 fields_to_update[k] = lit(v.value)
+            elif isinstance(v,datetime):
+                fields_to_update[k] = lit(str(v)) # casting the datetime to string seems to allow Snowflake to parse it correctly
             else:
                 fields_to_update[k] = lit(v)
         #colified_fields = {col(k):v for k,v in fields_to_update.items()}
